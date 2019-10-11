@@ -1,0 +1,32 @@
+{
+  "name": "sennen",
+  "version": "1.0.0",
+  "description": "Sennen tech test",
+  "main": "index.js",
+  "scripts": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/desertsystems/sennen.git"
+  },
+  "keywords": [
+    "sunrise",
+    "sunset"
+  ],
+  "author": "Tanwir",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/desertsystems/sennen/issues"
+  },
+  "homepage": "https://github.com/desertsystems/sennen#readme",
+  "dependencies": {
+    "async": "^3.1.0",
+    "moment": "^2.24.0",
+    "ramda": "^0.26.1",
+    "request": "^2.88.0"
+  },
+  "devDependencies": {
+    "eslint": "^6.5.1"
+  }
+}
