@@ -1,6 +1,8 @@
-const R = require('ramda');
-const Request = require('request');
-//const async = require('async');
+var CLI = require('./cli');
+//const os = require('os');
+const ramda = require('ramda');
+const process = require('process');
+const parallel = require('child_process');
 
 
 class Daylight {
@@ -12,98 +14,141 @@ class Daylight {
         this.MAX_LATITUDE = 90.0000000;
         this.MIN_LONGITUDE = -180.0000000;
         this.MAX_LONGITUDE = 180.0000000;
-        this.SUNRISE_SUNSET_API_URL = "https://api.sunrise-sunset.org/json";
-        this.list = [];
-        this.DAYLIGHT_DATE = "today";
+        this.URL = "https://api.sunrise-sunset.org/json";
         this.BATCH_SIZE = 5;
-        this.PARALLEL_LIMIT = 5;
         this.TIMEOUT = 5000; // 5 seconds
+        this.list = [];
+        this.processedList = [];
+        this.loading = 0;
+
+        this.c = new CLI(); // colours and styles for cli
+    }
+
+    setUrl(url) {
+        this.URL = url;
+        console.log(`${this.c.CYAN}using url: ${this.URL}${this.c.RESET}`);
     }
 
     /**
      * finds and returns day length for earliest sunrise
      */
-    findDaylightForEarliestSunrise() {
+    earliestSunrise() {
         var dayLength = "";
-        var earliestSunrise = R.apply(R.min, R.pluck('sunrise', this.list))
+        var earliestSunrise = ramda.apply(ramda.min, ramda.pluck('sunrise', this.processedList))
         
-        this.list.forEach(coordinates => {
+        this.processedList.forEach(coordinates => {
             if(coordinates.sunrise == earliestSunrise) dayLength = coordinates.day_length;
         });
 
-        return dayLength+" Hours";
+        return dayLength;
     }
 
-    /**
-     * callable loads all data in one process
-     */
-    load() {
-        this.populateCoordinates(this.COORDINATES_SIZE);
-
-        this.list.forEach(coordinates => {
-            this.populateDaylightHours(coordinates);
-        });
-    }
-
-    /**
-     * callable loads data via batch mode
-     */
-    loadBatch() {
-        this.populateCoordinates(this.COORDINATES_SIZE);
-
-        // create batch list based on BATCH_SIZE
-        for(var i = 0; i < this.list.length; i += this.BATCH_SIZE) {
-            this.processBatch(this.list.slice(i, i+this.BATCH_SIZE));
+    async run() {
+        let status = await this.load();
+        if(status == "process-complete") {
+            var dayLength = this.earliestSunrise();
+            console.log(`${this.c.YELLOW}\nDay length for earliest sunrise is ${this.c.RED}${dayLength} Hours`);
+            console.log(`${this.c.RESET}`);
         }
     }
 
+    async load() {
+        // generate a list of random coordinates
+        console.log(`generaing a list of ${this.COORDINATES_SIZE} random coordinates...`);
+        this.populateCoordinates(this.COORDINATES_SIZE);
+
+        // itterate through list to populate data via rest api requests 
+        let processStatus = new Promise((resolve, reject) => {
+            console.log("populating sunrise and day_length data for each coordinates...");
+            for(var i = 0; i < this.list.length; i += this.BATCH_SIZE) {
+                // divide list into batch sized arrays
+                var batch = this.list.slice(i, i+this.BATCH_SIZE);
+    
+                // process each batch
+                this.processBatch(batch, () => {
+                    // resolve promise when process is complete
+                    if(this.list.length == this.processedList.length) {
+                        resolve("process-complete");
+                    }
+                });
+            }
+        });
+
+        // wait for process to complete
+        let status = await processStatus;
+        return status;
+    }
+
     /**
-     * process batch and wait for timeout limit
+     * Process API requests in batches
+     * batchComplete is called when the last
+     * request has completed
      * @param {*} batch 
+     * @param {*} batchComplete 
      */
-    async processBatch(batch) {
-        console.log("processBatch:", batch);
-
-        batch.forEach(coordinates => {
-            this.populateDaylightHours(coordinates); 
-        });
-
-        await new Promise((resolve, reject) => setTimeout(resolve, this.TIMEOUT));
-    }
-    
-    /**
-     * populates daylight hours for
-     * given coordinates for today
-     */
-    populateDaylightHours(coordinates) {
-        var query = {
-            lat: coordinates.latitude,
-            lng: coordinates.longitude,
-            date: this.DAYLIGHT_DATE
+    async processBatch(batch, batchComplete) {
+        for(var i=0; i < batch.length; i++) {
+            this.processRequest(batch[i], () => {
+                if(i == batch.length) {
+                    batchComplete();
+                }
+            });
         }
-    
-        Request.get({url:this.SUNRISE_SUNSET_API_URL, qs:query}, (error, response, body) => {
-            if(!error) {
-                var results = JSON.parse(body).results;
-                coordinates.sunrise = results.sunrise;
-                coordinates.day_length = results.day_length;    
-    
-            } else console.log("ERROR: ", error, response);
+
+        // timeout before next batch is started
+        let timeout = new Promise((resolve, reject) => {
+            setTimeout(() => {
+                resolve("batch-complete");
+            }, this.TIMEOUT);
         });
+
+        let status = await timeout;
+        return status;
+    }
+
+    /**
+     * Process API request as folked process
+     * requestComplete is called when folked
+     * process sends 'exit' event
+     * @param {*} request 
+     * @param {*} requestComplete 
+     */
+    async processRequest(request, requestComplete) {
+        let requestStatus = new Promise((resolve, reject) => {
+            var process = parallel.fork('request.js');
+            
+            process.send({
+                "url": this.URL,
+                "coordinates": request
+            });
+    
+            process.on('message', async (result) => {
+                this.processedList.push(result);
+                this.percentageLoaded();
+            });
+    
+            process.on('exit', () => {
+                resolve("request-complete");
+                requestComplete();
+            });
+        });
+
+        let status = await requestStatus;
+        return status;
     }
 
     /**
      * populates a given number of 
      * random coordinates into 
      * an array list
+     * @param {*} amount 
      */
     populateCoordinates(amount) {
         var i;
         for(i = 0; i < amount; i++) {
             var coordinates = {
                 latitude: this.generateCoordinate(this.MIN_LATITUDE, this.MAX_LATITUDE),
-                longitude: this.generateCoordinate(this.MIN_LONGITUDE, this.MAX_LONGITUDE),
-                daylight: undefined
+                longitude: this.generateCoordinate(this.MIN_LONGITUDE, this.MAX_LONGITUDE)
             };
     
             this.list.push(coordinates);
@@ -113,38 +158,26 @@ class Daylight {
     /**
      * Generates random coordinates
      * between given min and max value
+     * @param {*} min 
+     * @param {*} max 
      */
     generateCoordinate(min, max) {
         return Math.random() * (max-min)+min;
     }
 
     /**
-     * test stud used to populate dummy data
-     * because service blockage 
-     * on https://api.sunrise-sunset.org/json
+     * displays percentage loaded on cli
      */
-    test() {
-        console.log("(using test data... switch to batchLoad)");
-        this.populateCoordinates(this.COORDINATES_SIZE);
+    percentageLoaded() {
+        this.loading++;
 
-        var daylight = {
-            sunrise: '7:53:09 PM',
-            sunset: '1:37:28 PM',
-            solar_noon: '4:45:19 AM',
-            day_length: '17:44:19',
-            civil_twilight_begin: '12:00:01 AM',
-            civil_twilight_end: '12:00:01 AM',
-            nautical_twilight_begin: '12:00:01 AM',
-            nautical_twilight_end: '12:00:01 AM',
-            astronomical_twilight_begin: '12:00:01 AM',
-            astronomical_twilight_end: '12:00:01 AM'
+        if(this.loading > 0) {
+            process.stdout.clearLine();
+            process.stdout.cursorTo(0);
         }
 
-        this.list.forEach(coordinates => {
-            coordinates.sunrise = daylight.sunrise;
-            coordinates.day_length = daylight.day_length;
-            //console.log(coordinates);
-        });
+        process.stdout.write(`${this.c.GREEN}${this.loading}%${this.c.RESET}`);
+        if(this.loading == 100) process.stdout.write(`${this.c.RESET}\n\n`);
     }
 }
 module.exports = Daylight;
